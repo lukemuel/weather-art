@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ATLAS // weather</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #050507; --accent: #e8c87a; --accent2: #7ad4c9;
+    --dim: rgba(255,255,255,0.45); --text: #f0eee8; --glass: rgba(12,12,16,0.62);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: var(--bg); color: var(--text); height: 100%; overflow: hidden; }
+  #stage { position: relative; width: 100vw; height: 100vh; }
+  canvas { position: absolute; top: 0; left: 0; }
+  #panel {
+    position: absolute; top: 28px; left: 28px; z-index: 10; display: flex; align-items: stretch;
+    background: var(--glass); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; overflow: hidden;
+  }
+  #cityInput {
+    background: transparent; border: none; border-right: 1px solid rgba(255,255,255,0.12); color: var(--text);
+    font-family: 'JetBrains Mono', monospace; font-weight: 300; font-size: 12.5px; letter-spacing: 0.08em;
+    padding: 13px 16px; width: 200px; outline: none;
+  }
+  #cityInput::placeholder { color: var(--dim); }
+  #goBtn {
+    background: transparent; border: none; color: var(--accent); font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px; letter-spacing: 0.25em; text-transform: uppercase; padding: 13px 18px; cursor: pointer; transition: background 0.2s ease;
+  }
+  #goBtn:hover { background: rgba(232,200,122,0.12); }
+  #readout {
+    position: absolute; bottom: 26px; left: 26px; z-index: 10; max-width: 280px;
+    background: var(--glass); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 18px 20px;
+  }
+  #locName { font-family: 'Fraunces', serif; font-weight: 500; font-size: 24px; letter-spacing: 0.01em; margin-bottom: 2px; line-height: 1.1; }
+  #locSub { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent2); margin-bottom: 14px; }
+  .statRow { display: flex; gap: 10px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.06em; color: var(--dim); margin-bottom: 4px; }
+  .statRow .lbl { width: 48px; flex-shrink: 0; }
+  .statRow .val { color: var(--text); }
+  #status {
+    position: absolute; top: 28px; right: 28px; z-index: 10; font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; letter-spacing: 0.22em; color: var(--dim); text-transform: uppercase; text-shadow: 0 1px 6px rgba(0,0,0,0.6);
+  }
+  #status.live { color: var(--accent2); }
+  #brand {
+    position: absolute; top: 30px; left: 50%; transform: translateX(-50%); z-index: 9;
+    font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.4em; color: rgba(255,255,255,0.25); text-transform: uppercase; pointer-events: none;
+  }
+  #grain { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 5; pointer-events: none; opacity: 0.04; mix-blend-mode: overlay; }
+  #vignette { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 6; pointer-events: none; background: radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,0.42) 100%); }
+  #flash { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 7; pointer-events: none; background: white; opacity: 0; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="canvas"></canvas>
+  <canvas id="grain"></canvas>
+  <div id="vignette"></div>
+  <div id="flash"></div>
+  <div id="brand">atlas</div>
+  <div id="panel">
+    <input type="text" id="cityInput" placeholder="enter a city..." value="Tempe">
+    <button id="goBtn">render →</button>
+  </div>
+  <div id="status">no data loaded</div>
+  <div id="readout"></div>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const grainCanvas = document.getElementById('grain');
+const gctx = grainCanvas.getContext('2d');
+let W, H;
+function resize() {
+  W = canvas.width = grainCanvas.width = window.innerWidth;
+  H = canvas.height = grainCanvas.height = window.innerHeight;
+  buildSkyline(currentSeed, currentPopulation);
+  buildHighway();
+  renderGrain();
+}
+window.addEventListener('resize', resize);
+
+function renderGrain() {
+  const imgData = gctx.createImageData(W, H);
+  for (let i = 0; i < imgData.data.length; i += 4) {
+    const v = Math.random() * 255;
+    imgData.data[i] = v; imgData.data[i+1] = v; imgData.data[i+2] = v; imgData.data[i+3] = 255;
+  }
+  gctx.putImageData(imgData, 0, 0);
+}
+
+let weather = null;
+let buildings = [];
+let clouds = [];
+let raindrops = [];
+let snowflakes = [];
+let stars = [];
+let cars = [];
+let sunPulse = 0;
+let t = 0;
+let currentSeed = 12345;
+let currentPopulation = 200000;
+let isStorm = false;
+let nextLightning = 9999;
+let flashOpacity = 0;
+
+const SKY_ZONE_TOP = 130;
+const GROUND_RATIO = 0.78;
+const HIGHWAY_RATIO = 0.90;
+
+function mulberry32(seed) {
+  return function() {
+    let t = seed += 0x6D2B79F5;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function cityNameToSeed(name) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) { hash = (hash<<5)-hash+name.charCodeAt(i); hash |= 0; }
+  return Math.abs(hash);
+}
+
+function buildSkyline(seed, population) {
+  const rand = mulberry32(seed);
+  buildings = [];
+  const groundY = H * GROUND_RATIO;
+  const maxAvailableHeight = groundY - SKY_ZONE_TOP;
+
+  const popFactor = Math.min(Math.max(Math.log10(population || 5000) / 7, 0.15), 1);
+  const density = 0.5 + popFactor * 0.9;
+  const maxHeightFactor = 0.18 + popFactor * 0.32;
+
+  let x = 0;
+  while (x < W) {
+    const width = 24 + rand() * 70 * (1.3 - popFactor*0.4);
+    const heightRoll = rand();
+    let height = popFactor > 0.6 && heightRoll > 0.78
+      ? maxAvailableHeight * maxHeightFactor * (0.85 + rand()*0.5)
+      : 40 + heightRoll * maxAvailableHeight * maxHeightFactor * 0.55;
+    height = Math.min(height, maxAvailableHeight);
+
+    const windowRows = Math.floor(height / 18);
+    const windowCols = Math.max(1, Math.floor(width / 14));
+    const windows = [];
+    for (let r = 0; r < windowRows; r++) for (let c = 0; c < windowCols; c++) windows.push({ lit: rand()>0.55, flicker: rand()*Math.PI*2 });
+    buildings.push({ x, width, height, groundY, windowRows, windowCols, windows });
+    x += width + (rand() * 10 * density);
+  }
+}
+
+function buildStars() {
+  stars = [];
+  for (let i = 0; i < 150; i++) stars.push({ x: Math.random()*W, y: Math.random()*H*0.6, r: Math.random()*1.4, twinkle: Math.random()*Math.PI*2 });
+}
+
+function buildClouds(coverage) {
+  clouds = [];
+  const count = Math.round(coverage / 12);
+  for (let i = 0; i < count; i++) clouds.push({ x: Math.random()*W, y: 50+Math.random()*(SKY_ZONE_TOP*1.6), scale: 0.6+Math.random()*1.4, speed: 0.15+Math.random()*0.3, opacity: 0.5+Math.random()*0.4 });
+}
+
+function buildPrecip(weather) {
+  raindrops = []; snowflakes = [];
+  const isSnow = [71,73,75,77,85,86].includes(weather.code);
+  const isRain = weather.precipitation > 0 && !isSnow;
+  if (isRain) for (let i = 0; i < 250; i++) raindrops.push({ x: Math.random()*W, y: Math.random()*H, len: 8+Math.random()*14, speed: 9+Math.random()*8 });
+  else if (isSnow) for (let i = 0; i < 150; i++) snowflakes.push({ x: Math.random()*W, y: Math.random()*H, r: 1+Math.random()*3, speed: 0.6+Math.random()*1.2, drift: Math.random()*Math.PI*2 });
+}
+
+function buildHighway() {
+  cars = [];
+  const laneY1 = H * (HIGHWAY_RATIO + 0.025), laneY2 = H * (HIGHWAY_RATIO + 0.06);
+  const vehicleTypes = [
+    { kind: 'sedan', len: 16, bodyH: 6, cabH: 4 },
+    { kind: 'suv', len: 18, bodyH: 7, cabH: 5 },
+    { kind: 'truck', len: 24, bodyH: 6, cabH: 6 },
+  ];
+  const colors = ['#d94f4f','#e8c87a','#5d8fd9','#e8e6df','#c9669c','#4f4f4f'];
+  for (let i = 0; i < 8; i++) { const vt = vehicleTypes[Math.floor(Math.random()*vehicleTypes.length)]; cars.push({ x: Math.random()*W, y: laneY1, speed: 2.2+Math.random()*2, dir: 1, color: colors[Math.floor(Math.random()*colors.length)], ...vt }); }
+  for (let i = 0; i < 8; i++) { const vt = vehicleTypes[Math.floor(Math.random()*vehicleTypes.length)]; cars.push({ x: Math.random()*W, y: laneY2, speed: -(2.2+Math.random()*2), dir: -1, color: colors[Math.floor(Math.random()*colors.length)], ...vt }); }
+}
+
+function skyPalette(weather) {
+  const isDay = weather.isDay, tempC = weather.temp, cloudCover = weather.cloudCover;
+  if (isStorm) return isDay ? { top:[60,64,70], bottom:[105,108,112] } : { top:[8,9,13], bottom:[22,22,26] };
+  if (isDay) {
+    if (cloudCover > 70) return { top:[95,100,112], bottom:[165,165,168] };
+    if (tempC >= 30) return { top:[70,145,215], bottom:[255,205,150] };
+    if (tempC <= 5) return { top:[150,175,205], bottom:[215,222,228] };
+    return { top:[80,155,220], bottom:[205,222,235] };
+  } else {
+    if (cloudCover > 70) return { top:[12,11,18], bottom:[32,28,36] };
+    return { top:[8,8,24], bottom:[28,20,42] };
+  }
+}
+
+function drawSky(palette) {
+  const grad = ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0, `rgb(${palette.top.join(',')})`); grad.addColorStop(1, `rgb(${palette.bottom.join(',')})`);
+  ctx.fillStyle = grad; ctx.fillRect(0,0,W,H);
+}
+
+function drawStars(opacity) {
+  for (const s of stars) {
+    const tw = 0.5 + 0.5*Math.sin(t*2+s.twinkle);
+    ctx.fillStyle = `rgba(255,255,255,${opacity*tw})`;
+    ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,Math.PI*2); ctx.fill();
+  }
+}
+
+function drawSun(cloudCover) {
+  const sunX = W*0.78, sunY = Math.min(H*0.2, SKY_ZONE_TOP*0.85);
+  const radius = 32+Math.sin(sunPulse)*3, dim = cloudCover>60?0.4:1;
+  const glow = ctx.createRadialGradient(sunX,sunY,0,sunX,sunY,radius*4);
+  glow.addColorStop(0,`rgba(255,235,150,${0.5*dim})`); glow.addColorStop(1,'rgba(255,235,150,0)');
+  ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(sunX,sunY,radius*4,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = `rgba(255,244,200,${dim})`; ctx.beginPath(); ctx.arc(sunX,sunY,radius,0,Math.PI*2); ctx.fill();
+}
+
+function drawMoon(cloudCover) {
+  const moonX = W*0.78, moonY = Math.min(H*0.18, SKY_ZONE_TOP*0.8);
+  const radius = 26, dim = cloudCover>60?0.35:1;
+  const glow = ctx.createRadialGradient(moonX,moonY,0,moonX,moonY,radius*3.5);
+  glow.addColorStop(0,`rgba(220,225,255,${0.35*dim})`); glow.addColorStop(1,'rgba(220,225,255,0)');
+  ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(moonX,moonY,radius*3.5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = `rgba(235,238,250,${dim})`; ctx.beginPath(); ctx.arc(moonX,moonY,radius,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = `rgba(200,205,225,${dim*0.5})`;
+  ctx.beginPath(); ctx.arc(moonX-9,moonY-5,4.5,0,Math.PI*2); ctx.arc(moonX+7,moonY+7,6,0,Math.PI*2); ctx.fill();
+}
+
+function drawCloudShape(x,y,scale,opacity) {
+  const c = isStorm ? [70,72,78] : [235,238,245];
+  ctx.fillStyle = `rgba(${c.join(',')},${opacity})`;
+  ctx.beginPath();
+  ctx.arc(x,y,22*scale,0,Math.PI*2);
+  ctx.arc(x+24*scale,y-10*scale,26*scale,0,Math.PI*2);
+  ctx.arc(x+50*scale,y,20*scale,0,Math.PI*2);
+  ctx.arc(x+24*scale,y+8*scale,24*scale,0,Math.PI*2);
+  ctx.fill();
+}
+
+function drawClouds() { for (const c of clouds) { c.x += c.speed; if (c.x > W+80) c.x = -80; drawCloudShape(c.x,c.y,c.scale,c.opacity); } }
+
+function drawSkyline(isDay) {
+  for (const b of buildings) {
+    const baseY = b.groundY - b.height;
+    ctx.fillStyle = isDay ? (isStorm ? 'rgba(30,32,38,0.92)' : 'rgba(42,46,56,0.92)') : 'rgba(8,8,14,0.95)';
+    ctx.fillRect(b.x, baseY, b.width, b.height);
+    ctx.fillStyle = isDay ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)';
+    ctx.fillRect(b.x, baseY, 2, b.height);
+    if (!isDay) {
+      let i = 0;
+      for (let r = 0; r < b.windowRows; r++) for (let c = 0; c < b.windowCols; c++) {
+        const win = b.windows[i++];
+        if (win.lit) { const flicker = 0.7+0.3*Math.sin(t*3+win.flicker); ctx.fillStyle = `rgba(255,210,120,${flicker})`; ctx.fillRect(b.x+5+c*14, baseY+8+r*18, 6, 8); }
+      }
+    } else {
+      let i = 0;
+      for (let r = 0; r < b.windowRows; r++) for (let c = 0; c < b.windowCols; c++) { ctx.fillStyle = isStorm ? 'rgba(150,160,170,0.18)' : 'rgba(195,215,228,0.28)'; ctx.fillRect(b.x+5+c*14, baseY+8+r*18, 6, 8); i++; }
+      ctx.save(); ctx.beginPath(); ctx.rect(b.x, baseY, b.width, b.height); ctx.clip();
+      const sweepX = b.x + ((t*60+b.x*0.5)%(b.width+200))-100;
+      const shimmerGrad = ctx.createLinearGradient(sweepX, baseY, sweepX+60, baseY+b.height);
+      shimmerGrad.addColorStop(0,'rgba(255,255,255,0)'); shimmerGrad.addColorStop(0.5,`rgba(255,255,255,${isStorm?0.08:0.2})`); shimmerGrad.addColorStop(1,'rgba(255,255,255,0)');
+      ctx.fillStyle = shimmerGrad; ctx.fillRect(b.x-10, baseY-10, b.width+20, b.height+20); ctx.restore();
+    }
+  }
+  ctx.fillStyle = isDay ? 'rgba(25,28,34,0.95)' : 'rgba(3,3,6,0.98)';
+  ctx.fillRect(0, H*GROUND_RATIO, W, H*(1-GROUND_RATIO));
+}
+
+function drawCar(car, isDay) {
+  const x = car.x, y = car.y, facingRight = car.dir === 1;
+  ctx.save();
+  if (!facingRight) { ctx.translate(x+car.len, y); ctx.scale(-1,1); ctx.translate(-x,-y); }
+  ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(x, y+car.bodyH/2+1, car.len, 2);
+  ctx.fillStyle = car.color;
+  ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+car.len,y); ctx.lineTo(x+car.len,y+car.bodyH*0.6); ctx.lineTo(x,y+car.bodyH*0.6); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = isDay ? 'rgba(180,200,215,0.85)' : 'rgba(40,50,65,0.9)';
+  const cabX = x+car.len*0.45;
+  ctx.beginPath(); ctx.moveTo(cabX,y); ctx.lineTo(cabX+car.cabH*1.4,y); ctx.lineTo(cabX+car.cabH*1.1,y-car.cabH); ctx.lineTo(cabX+car.cabH*0.3,y-car.cabH); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(10,10,10,0.9)';
+  ctx.beginPath(); ctx.arc(x+car.len*0.22,y+car.bodyH*0.6,2.2,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x+car.len*0.78,y+car.bodyH*0.6,2.2,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+  if (!isDay || isStorm) {
+    const lightX = facingRight ? x+car.len : x;
+    ctx.fillStyle = facingRight ? 'rgba(255,250,200,0.95)' : 'rgba(255,55,55,0.95)';
+    ctx.beginPath(); ctx.arc(lightX, y+car.bodyH*0.3, 1.8, 0, Math.PI*2); ctx.fill();
+    if (facingRight) {
+      const glow = ctx.createRadialGradient(lightX,y+car.bodyH*0.3,0,lightX,y+car.bodyH*0.3,14);
+      glow.addColorStop(0,'rgba(255,250,200,0.35)'); glow.addColorStop(1,'rgba(255,250,200,0)');
+      ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(lightX,y+car.bodyH*0.3,14,0,Math.PI*2); ctx.fill();
+    }
+  }
+}
+
+function drawHighway(isDay) {
+  const roadTop = H*HIGHWAY_RATIO, roadHeight = H*(1-HIGHWAY_RATIO);
+  ctx.fillStyle = isDay ? 'rgba(48,48,54,0.95)' : 'rgba(16,16,20,0.98)';
+  ctx.fillRect(0, roadTop, W, roadHeight);
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.setLineDash([16,14]); ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, roadTop+roadHeight*0.5); ctx.lineTo(W, roadTop+roadHeight*0.5); ctx.stroke();
+  ctx.setLineDash([]);
+  for (const car of cars) {
+    car.x += car.speed;
+    if (car.dir === 1 && car.x > W+30) car.x = -30;
+    if (car.dir === -1 && car.x < -30) car.x = W+30;
+    drawCar(car, isDay);
+  }
+}
+
+function drawRain() {
+  ctx.strokeStyle = 'rgba(180,200,230,0.5)'; ctx.lineWidth = 1.2;
+  for (const d of raindrops) { d.y+=d.speed; d.x-=1.5; if (d.y>H){d.y=-10;d.x=Math.random()*W;} ctx.beginPath(); ctx.moveTo(d.x,d.y); ctx.lineTo(d.x-3,d.y+d.len); ctx.stroke(); }
+}
+function drawSnow() {
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  for (const s of snowflakes) { s.y+=s.speed; s.x+=Math.sin(t+s.drift)*0.4; if (s.y>H){s.y=-5;s.x=Math.random()*W;} ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,Math.PI*2); ctx.fill(); }
+}
+
+function updateLightning() {
+  if (!isStorm) { flashOpacity = 0; document.getElementById('flash').style.opacity = 0; return; }
+  nextLightning -= 1;
+  if (nextLightning <= 0) { flashOpacity = 0.55 + Math.random()*0.3; nextLightning = 90 + Math.random()*240; }
+  else { flashOpacity *= 0.82; }
+  document.getElementById('flash').style.opacity = flashOpacity;
+}
+
+function weatherCodeToLabel(code) {
+  if (code===0) return "Clear sky";
+  if ([1,2,3].includes(code)) return "Partly cloudy";
+  if ([45,48].includes(code)) return "Fog";
+  if ([51,53,55,56,57].includes(code)) return "Drizzle";
+  if ([61,63,65,66,67].includes(code)) return "Rain";
+  if ([71,73,75,77].includes(code)) return "Snow";
+  if ([80,81,82].includes(code)) return "Rain showers";
+  if ([85,86].includes(code)) return "Snow showers";
+  if ([95,96,99].includes(code)) return "Thunderstorm";
+  return "Unknown";
+}
+
+function draw() {
+  requestAnimationFrame(draw);
+  if (!weather) return;
+  t += 0.016; sunPulse += 0.02;
+  updateLightning();
+
+  const palette = skyPalette(weather);
+  drawSky(palette);
+
+  if (!weather.isDay) { drawStars(weather.cloudCover>70?0.15:0.8); drawMoon(weather.cloudCover); }
+  else { drawSun(weather.cloudCover); }
+
+  drawClouds();
+  drawSkyline(weather.isDay);
+  drawHighway(weather.isDay);
+
+  if (raindrops.length) drawRain();
+  if (snowflakes.length) drawSnow();
+}
+
+async function fetchWeather(city) {
+  const statusEl = document.getElementById('status');
+  statusEl.textContent = 'fetching...'; statusEl.classList.remove('live');
+  try {
+    const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1`);
+    const geoData = await geoRes.json();
+    if (!geoData.results || geoData.results.length === 0) { statusEl.textContent = 'city not found'; return; }
+
+    const loc = geoData.results[0];
+    const population = loc.population || 50000;
+    const regionLabel = loc.country || loc.admin1 || loc.country_code || 'Region unknown';
+
+    const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current=temperature_2m,wind_speed_10m,precipitation,cloud_cover,weather_code,is_day`);
+    const weatherData = await weatherRes.json();
+    const current = weatherData.current;
+
+    weather = { temp: current.temperature_2m, windSpeed: current.wind_speed_10m, precipitation: current.precipitation, cloudCover: current.cloud_cover, code: current.weather_code, isDay: current.is_day === 1 };
+    isStorm = [95,96,99].includes(weather.code);
+    nextLightning = isStorm ? 30 + Math.random()*120 : 9999;
+
+    currentSeed = cityNameToSeed(loc.name + (loc.country || ''));
+    currentPopulation = population;
+
+    buildSkyline(currentSeed, currentPopulation);
+    buildClouds(weather.cloudCover);
+    buildPrecip(weather);
+    buildHighway();
+
+    statusEl.textContent = 'live'; statusEl.classList.add('live');
+
+    document.getElementById('readout').innerHTML = `
+      <div id="locName">${loc.name}</div>
+      <div id="locSub">${regionLabel}</div>
+      <div class="statRow"><span class="lbl">temp</span><span class="val">${weather.temp}°C</span></div>
+      <div class="statRow"><span class="lbl">wind</span><span class="val">${weather.windSpeed} km/h</span></div>
+      <div class="statRow"><span class="lbl">cloud</span><span class="val">${weather.cloudCover}%</span></div>
+      <div class="statRow"><span class="lbl">sky</span><span class="val">${weatherCodeToLabel(weather.code)}</span></div>
+      <div class="statRow"><span class="lbl">pop.</span><span class="val">${population.toLocaleString()}</span></div>
+    `;
+  } catch (err) { statusEl.textContent = 'error fetching data'; console.error(err); }
+}
+
+document.getElementById('goBtn').addEventListener('click', () => { const city = document.getElementById('cityInput').value.trim(); if (city) fetchWeather(city); });
+document.getElementById('cityInput').addEventListener('keypress', (e) => { if (e.key === 'Enter') document.getElementById('goBtn').click(); });
+
+resize(); buildStars(); draw(); fetchWeather('Tempe');
+</script>
+</body>
+</html>
